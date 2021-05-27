@@ -65,13 +65,13 @@ class Tuner(base_component.BaseComponent):
   EXECUTOR_SPEC = executor_spec.ExecutorClassSpec(executor.Executor)
 
   def __init__(self,
-               examples: types.Channel = None,
+               examples: Optional[types.Channel] = None,
                schema: Optional[types.Channel] = None,
                transform_graph: Optional[types.Channel] = None,
                module_file: Optional[Text] = None,
                tuner_fn: Optional[Text] = None,
-               train_args: trainer_pb2.TrainArgs = None,
-               eval_args: trainer_pb2.EvalArgs = None,
+               train_args: Optional[trainer_pb2.TrainArgs] = None,
+               eval_args: Optional[trainer_pb2.EvalArgs] = None,
                tune_args: Optional[tuner_pb2.TuneArgs] = None,
                custom_config: Optional[Dict[Text, Any]] = None):
     """Construct a Tuner component.

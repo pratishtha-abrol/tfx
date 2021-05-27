@@ -92,7 +92,7 @@ class Trainer(base_component.BaseComponent):
 
   def __init__(
       self,
-      examples: types.Channel = None,
+      examples: Optional[types.Channel] = None,
       transformed_examples: Optional[types.Channel] = None,
       transform_graph: Optional[types.Channel] = None,
       schema: Optional[types.Channel] = None,
@@ -102,8 +102,9 @@ class Trainer(base_component.BaseComponent):
       run_fn: Optional[Union[Text, data_types.RuntimeParameter]] = None,
       # TODO(b/147702778): deprecate trainer_fn.
       trainer_fn: Optional[Union[Text, data_types.RuntimeParameter]] = None,
-      train_args: Union[trainer_pb2.TrainArgs, Dict[Text, Any]] = None,
-      eval_args: Union[trainer_pb2.EvalArgs, Dict[Text, Any]] = None,
+      train_args: Optional[Union[trainer_pb2.TrainArgs, Dict[Text,
+                                                             Any]]] = None,
+      eval_args: Optional[Union[trainer_pb2.EvalArgs, Dict[Text, Any]]] = None,
       custom_config: Optional[Dict[Text, Any]] = None,
       custom_executor_spec: Optional[executor_spec.ExecutorSpec] = None):
     """Construct a Trainer component.
