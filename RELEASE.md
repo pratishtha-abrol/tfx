@@ -13,6 +13,7 @@
 ## Bug Fixes and Other Changes
 
 ## Documentation Updates
+*  Update Penguin Example
 
 # Version 1.0.0
 

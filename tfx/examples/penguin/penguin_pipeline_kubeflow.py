@@ -17,8 +17,17 @@ import os
 from typing import Dict, List, Text
 
 from absl import app
+from absl import flags
 import tensorflow_model_analysis as tfma
 from tfx import v1 as tfx
+
+flags.DEFINE_enum(
+    'run_env', 'gcp', ['gcp', 'local'],
+    'Define running environment: gcp or local.')
+
+_env_local = 'local'
+
+_env_gcp = 'gcp'
 
 _pipeline_name = 'penguin_kubeflow_gcp'
 
@@ -102,6 +111,12 @@ _beam_pipeline_args = [
     '--experiments=use_runner_v2',
 ]
 
+# Path which can be listened to by the model server.
+# Pusher will output the trained model here.
+_persistent_volume_mount = '/mnt'
+_output_base = os.path.join(_persistent_volume_mount, 'pipelines')
+_serving_model_dir = os.path.join(_output_base, _pipeline_name, 'serving_model')
+
 
 def create_pipeline(
     pipeline_name: Text,
@@ -112,6 +127,8 @@ def create_pipeline(
     ai_platform_serving_args: Dict[Text, Text],
     enable_tuning: bool,
     beam_pipeline_args: List[Text],
+    serving_model_dir: Text,
+    run_env: Text,
 ) -> tfx.dsl.Pipeline:
   """Implements the penguin pipeline with TFX and Kubeflow Pipeline.
 
@@ -131,6 +148,8 @@ def create_pipeline(
       enabled.
     beam_pipeline_args: List of beam pipeline options. Please refer to
       https://cloud.google.com/dataflow/docs/guides/specifying-exec-params#setting-other-cloud-dataflow-pipeline-options.
+    serving_model_dir: filepath to write pipeline SavedModel to.
+    run_env: flag the define pipeline runs on local or gcp.
 
   Returns:
     A TFX pipeline object.
@@ -194,62 +213,89 @@ def create_pipeline(
     # vs distributed training per trial
     #   ... -> DistributingCloudTunerA -> CAIP job Y -> master,worker1,2,3
     #       -> DistributingCloudTunerB -> CAIP job Z -> master,worker1,2,3
-    tuner = tfx.extensions.google_cloud_ai_platform.Tuner(
+    if run_env == 'gcp':
+      tuner = tfx.extensions.google_cloud_ai_platform.Tuner(
+          module_file=module_file,
+          examples=transform.outputs['transformed_examples'],
+          transform_graph=transform.outputs['transform_graph'],
+          train_args={'num_steps': train_steps},
+          eval_args={'num_steps': eval_steps},
+          tune_args=tfx.proto.TuneArgs(
+              # num_parallel_trials=3 means that 3 search loops are
+              # running in parallel.
+              num_parallel_trials=3),
+          custom_config={
+              # Note that this TUNING_ARGS_KEY will be used to start the CAIP
+              # job for parallel tuning (CAIP job X above).
+              #
+              # num_parallel_trials will be used to fill/overwrite the
+              # workerCount specified by TUNING_ARGS_KEY:
+              #   num_parallel_trials = workerCount + 1 (for master)
+              tfx.extensions.google_cloud_ai_platform.experimental
+              .TUNING_ARGS_KEY:
+                  ai_platform_training_args,
+              # This working directory has to be a valid GCS path and will be
+              # used to launch remote training job per trial.
+              tfx.extensions.google_cloud_ai_platform.experimental
+              .REMOTE_TRIALS_WORKING_DIR_KEY:
+                  os.path.join(_pipeline_root, 'trials'),
+          })
+    elif run_env == 'local':
+      tuner = tfx.components.Tuner(
+          module_file=module_file,
+          examples=transform.outputs['transformed_examples'],
+          transform_graph=transform.outputs['transform_graph'],
+          train_args={'num_steps': train_steps},
+          eval_args={'num_steps': eval_steps},
+          tune_args=tfx.proto.TuneArgs(
+              # num_parallel_trials=3 means that 3 search loops are
+              # running in parallel.
+              num_parallel_trials=3))
+
+  if run_env == _env_gcp:
+    # Uses user-provided Python function that trains a model.
+    trainer = tfx.extensions.google_cloud_ai_platform.Trainer(
         module_file=module_file,
         examples=transform.outputs['transformed_examples'],
         transform_graph=transform.outputs['transform_graph'],
+        schema=schema_gen.outputs['schema'],
+        # If Tuner is in the pipeline, Trainer can take Tuner's output
+        # best_hyperparameters artifact as input and utilize it in the user
+        # module code.
+        #
+        # If there isn't Tuner in the pipeline, either use ImporterNode to
+        # import a previous Tuner's output to feed to Trainer, or directly use
+        # the tuned hyperparameters in user module code and set hyperparameters
+        # to None here.
+        #
+        # Example of ImporterNode,
+        #   hparams_importer = ImporterNode(
+        #     source_uri='path/to/best_hyperparameters.txt',
+        #     artifact_type=HyperParameters).with_id('import_hparams')
+        #   ...
+        #   hyperparameters = hparams_importer.outputs['result'],
+        hyperparameters=(tuner.outputs['best_hyperparameters']
+                         if enable_tuning else None),
+        train_args={'num_steps': train_steps
+                   },  # do we still need to pass train_args here?
+        eval_args={'num_steps': eval_steps},
+        custom_config={
+            tfx.extensions.google_cloud_ai_platform.TRAINING_ARGS_KEY:
+                ai_platform_training_args
+        })
+  elif run_env == _env_gcp:
+    # Uses user-provided Python function that implements a model using TF-Learn
+    # to train a model on Google Cloud AI Platform.
+    trainer = tfx.components.Trainer(
+        module_file=module_file,
+        examples=transform.outputs['transformed_examples'],
+        transform_graph=transform.outputs['transform_graph'],
+        schema=schema_gen.outputs['schema'],
+        hyperparameters=(tuner.outputs['best_hyperparameters']
+                         if enable_tuning else None),
         train_args={'num_steps': train_steps},
         eval_args={'num_steps': eval_steps},
-        tune_args=tfx.proto.TuneArgs(
-            # num_parallel_trials=3 means that 3 search loops are
-            # running in parallel.
-            num_parallel_trials=3),
-        custom_config={
-            # Note that this TUNING_ARGS_KEY will be used to start the CAIP job
-            # for parallel tuning (CAIP job X above).
-            #
-            # num_parallel_trials will be used to fill/overwrite the
-            # workerCount specified by TUNING_ARGS_KEY:
-            #   num_parallel_trials = workerCount + 1 (for master)
-            tfx.extensions.google_cloud_ai_platform.experimental
-            .TUNING_ARGS_KEY:
-                ai_platform_training_args,
-            # This working directory has to be a valid GCS path and will be used
-            # to launch remote training job per trial.
-            tfx.extensions.google_cloud_ai_platform.experimental
-            .REMOTE_TRIALS_WORKING_DIR_KEY:
-                os.path.join(_pipeline_root, 'trials'),
-        })
-
-  # Uses user-provided Python function that trains a model.
-  trainer = tfx.extensions.google_cloud_ai_platform.Trainer(
-      module_file=module_file,
-      examples=transform.outputs['transformed_examples'],
-      transform_graph=transform.outputs['transform_graph'],
-      schema=schema_gen.outputs['schema'],
-      # If Tuner is in the pipeline, Trainer can take Tuner's output
-      # best_hyperparameters artifact as input and utilize it in the user module
-      # code.
-      #
-      # If there isn't Tuner in the pipeline, either use ImporterNode to import
-      # a previous Tuner's output to feed to Trainer, or directly use the tuned
-      # hyperparameters in user module code and set hyperparameters to None
-      # here.
-      #
-      # Example of ImporterNode,
-      #   hparams_importer = ImporterNode(
-      #     source_uri='path/to/best_hyperparameters.txt',
-      #     artifact_type=HyperParameters).with_id('import_hparams')
-      #   ...
-      #   hyperparameters = hparams_importer.outputs['result'],
-      hyperparameters=(tuner.outputs['best_hyperparameters']
-                       if enable_tuning else None),
-      train_args={'num_steps': train_steps},
-      eval_args={'num_steps': eval_steps},
-      custom_config={
-          tfx.extensions.google_cloud_ai_platform.TRAINING_ARGS_KEY:
-              ai_platform_training_args
-      })
+    )
 
   # Get the latest blessed model for model validation.
   model_resolver = tfx.dsl.Resolver(
@@ -285,14 +331,39 @@ def create_pipeline(
       baseline_model=model_resolver.outputs['model'],
       eval_config=eval_config)
 
-  pusher = tfx.extensions.google_cloud_ai_platform.Pusher(
+  # Performs infra validation of a candidate model to prevent unservable model
+  # from being pushed. In order to use InfraValidator component, persistent
+  # volume and its claim that the pipeline is using should be a ReadWriteMany
+  # access mode.
+  infra_validator = tfx.components.InfraValidator(
       model=trainer.outputs['model'],
-      model_blessing=evaluator.outputs['blessing'],
-      custom_config={
-          tfx.extensions.google_cloud_ai_platform.experimental
-          .PUSHER_SERVING_ARGS_KEY:
-              ai_platform_serving_args
-      })
+      examples=example_gen.outputs['examples'],
+      serving_spec=tfx.proto.ServingSpec(
+          tensorflow_serving=tfx.proto.TensorFlowServing(
+              tags=['latest']),  ## ? check
+          kubernetes=tfx.proto.KubernetesConfig()),
+      request_spec=tfx.proto.RequestSpec(
+          tensorflow_serving=tfx.proto.TensorFlowServingRequestSpec())
+  )
+
+  if run_env == _env_gcp:
+    pusher = tfx.extensions.google_cloud_ai_platform.Pusher(
+        model=trainer.outputs['model'],
+        model_blessing=evaluator.outputs['blessing'],
+        infra_blessing=infra_validator.outputs['blessing'],
+        custom_config={
+            tfx.extensions.google_cloud_ai_platform.experimental
+            .PUSHER_SERVING_ARGS_KEY:
+                ai_platform_serving_args
+        })
+  elif run_env == _env_local:
+    pusher = tfx.components.Pusher(
+        model=trainer.outputs['model'],
+        model_blessing=evaluator.outputs['blessing'],
+        infra_blessing=infra_validator.outputs['blessing'],
+        push_destination=tfx.proto.PushDestination(
+            filesystem=tfx.proto.PushDestination.Filesystem(
+                base_directory=serving_model_dir)))
 
   components = [
       example_gen,
@@ -336,12 +407,14 @@ def main(unused_argv):
           ai_platform_training_args=_ai_platform_training_args,
           ai_platform_serving_args=_ai_platform_serving_args,
           beam_pipeline_args=_beam_pipeline_args,
-      ))
+          serving_model_dir=_serving_model_dir,  # from kfp_local
+          run_env=flags.FLAGS.run_env))
 
 
 # $ tfx pipeline create \
 # --pipeline-path=penguin_pipeline_kubeflow_gcp.py
 # --endpoint='my-gcp-endpoint.pipelines.googleusercontent.com'
+# --run_enc='local'
 # See TFX CLI guide for creating TFX pipelines:
 # https://github.com/tensorflow/tfx/blob/master/docs/guide/cli.md#create
 # For endpoint, see guide on connecting to hosted AI Platform Pipelines:
