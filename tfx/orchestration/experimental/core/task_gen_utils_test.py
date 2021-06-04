@@ -189,6 +189,7 @@ class TaskGenUtilsTest(tu.TfxTest):
       self.assertProtoPartiallyEquals(
           """
           id: 1
+          type_id: 4
           uri: "my_examples_uri"
           custom_properties {
             key: "span"
@@ -205,8 +206,7 @@ class TaskGenUtilsTest(tu.TfxTest):
           state: LIVE""",
           resolved_info.input_artifacts['examples'][0].mlmd_artifact,
           ignored_fields=[
-              'type_id', 'create_time_since_epoch',
-              'last_update_time_since_epoch'
+              'create_time_since_epoch', 'last_update_time_since_epoch'
           ])
 
   def test_get_latest_successful_execution(self):

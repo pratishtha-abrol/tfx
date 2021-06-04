@@ -84,6 +84,7 @@ class ExecutionWatcherTest(test_case_utils.TfxTest):
     self.assertProtoPartiallyEquals(
         """
       id: 1
+      type_id: 1
       last_known_state: RUNNING
       custom_properties {
         key: "test_key"
@@ -94,7 +95,7 @@ class ExecutionWatcherTest(test_case_utils.TfxTest):
       """,
         executions[0],
         ignored_fields=[
-            'type_id', 'create_time_since_epoch', 'last_update_time_since_epoch'
+            'create_time_since_epoch', 'last_update_time_since_epoch'
         ])
 
 
