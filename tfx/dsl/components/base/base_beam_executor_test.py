@@ -47,7 +47,7 @@ class BaseBeamExecutorTest(tf.test.TestCase):
     self.assertListEqual(
         [
             # Label is coverted to lowercase.
-            'tfx_executor=__main__-_testexecutor',
+            'tfx_executor=custom_executor',
             'tfx_py_version=%d-%d' %
             (sys.version_info.major, sys.version_info.minor),
             'tfx_version=%s' % version.__version__.replace('.', '-'),

@@ -76,6 +76,8 @@ class BaseBeamExecutor(BaseExecutor):
           self._beam_pipeline_args)
       executor_class_path = '%s.%s' % (self.__class__.__module__,
                                        self.__class__.__name__)
+      if not executor_class_path.startswith('tfx.'):
+        executor_class_path = 'custom_executor'
       # TODO(zhitaoli): Rethink how we can add labels and only normalize them
       # if the job is submitted against GCP.
       with telemetry_utils.scoped_labels(
